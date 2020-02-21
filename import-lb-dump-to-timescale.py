@@ -9,6 +9,7 @@ import datetime
 from time import time
 from psycopg2.errors import OperationalError, DuplicateTable, UntranslatableCharacter
 from psycopg2.extras import execute_values
+from influxdb import InfluxDBClient
 
 #TODO
 # - Take empty fields from influx and not store them in timescale
@@ -90,26 +91,48 @@ def parse_listens(conn, filename):
     write_listens(conn, listens)
 
 
-def find_listen_files(conn, path):
+def get_measurement_name(user_name):
+    """ Function to return the measurement name that influx has saved for given user name"""
 
-    for filename in os.listdir(path):
-        if filename in ['.', '..']:
-            continue
+    # Note: there are we have to replace each \ with two backslashes because influxdb-python
+    # adds an extra backslash for each backslash in the measurement name itself
+    return '"{}"'.format(user_name.replace('\\', '\\\\').replace('\n', '\\\\n'))
 
-        new_path = os.path.join(path, filename)
-        if os.path.isdir(new_path):
-            find_listen_files(conn, new_path)
 
-        if filename.endswith(".listens"):
-            parse_listens(conn, new_path)
+def get_escaped_measurement_name(user_name):
+    """ Function to return the string which can directly be passed into influx queries for a
+        user's measurement
+    """
+
+    # Note: influxdb-python first replaces each backslash in the username with two backslashes
+    # and because in influx queries, we have to escape each backslash, overall each backslash
+    # must be replaced by 4 backslashes. Yes, this is hacky and ugly.
+    return '"\\"{}\\""'.format(user_name.replace('\\', '\\\\\\\\').replace('"', '\\"').replace('\n', '\\\\\\\\n'))
+
+
+def fetch_listens(iclient, conn, user_name):
+
+    query = 'SELECT * FROM ' + get_escaped_measurement_name(user_name) + ' ORDER BY time ASC'
+    try:
+        results = iclient.query(query)
+    except Exception as err:
+        self.log.error("Cannot query influx while getting listens for user: %s: %s", user_name, str(err), exc_info=True)
+        return []
+
+    listens = []
+    for result in results.get_points(measurement=get_measurement_name(user_name)):
+        print(result)
+
 
 
 @click.command()
-@click.argument("listens_dir", nargs=1)
-def import_listens(listens_dir):
+def import_listens():
     with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
         create_tables(conn)
-        find_listen_files(conn, listens_dir)
+        print("connect to influx")
+        iclient = InfluxDBClient('localhost', 8086, 'root', 'root', 'listenbrainz')
+        print("connected to influx")
+        fetch_listens(iclient, conn, "rob")
 
 
 def usage(command):
