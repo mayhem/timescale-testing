@@ -1,0 +1,3 @@
+ujson
+psycopg2-binary
+click
