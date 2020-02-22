@@ -5,7 +5,6 @@ import click
 import os
 import ujson
 import psycopg2
-import datetime
 from time import time
 from psycopg2.errors import OperationalError, DuplicateTable, UntranslatableCharacter
 from psycopg2.extras import execute_values
@@ -15,12 +14,16 @@ from psycopg2.extras import execute_values
 
 CREATE_LISTEN_TABLE_QUERY = """
     CREATE TABLE listen (
-        listened_at     TIMESTAMPTZ       NOT NULL,
+        listened_at     BIGINT            NOT NULL,
         recording_msid  UUID              NOT NULL,
         user_name       TEXT              NOT NULL,
         data            JSONB             NOT NULL
     )
 """
+
+CREATE_INDEX_QUERIES = [
+    "CREATE INDEX ON listen (listened_at DESC, user_name)"
+]
 
 class ListenImporter(object):
 
@@ -35,7 +38,7 @@ class ListenImporter(object):
             while True:
                 try:
                     curs.execute(CREATE_LISTEN_TABLE_QUERY)
-                    curs.execute("SELECT create_hypertable('listen', 'listened_at')")
+                    curs.execute("SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => %s)" % (86400 * 5))
                     print("created table")
                     self.conn.commit()
                     break
@@ -45,6 +48,16 @@ class ListenImporter(object):
                     print("dropped old table")
                     curs.execute("DROP TABLE listen")
                     self.conn.commit()
+
+
+
+    def create_indexes(self):
+
+        print("create indexes")
+        with self.conn.cursor() as curs:
+            for query in CREATE_INDEX_QUERIES:
+                print(query)
+                curs.execute(query)
 
 
     def write_listens(self, listens):
@@ -84,7 +97,7 @@ class ListenImporter(object):
                 if tm['release_name']:
                     tm['release_name'] = tm['release_name'].replace("\u0000", "")
                 listens.append([
-                    datetime.datetime.utcfromtimestamp(data['listened_at']),
+                    data['listened_at'],
                     data['recording_msid'],
                     data['user_name'],
                     ujson.dumps(tm)])
@@ -100,9 +113,10 @@ class ListenImporter(object):
 def import_listens(listens_file):
     with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
         li = ListenImporter(conn)
-        li.create_tables()
         try:
+            li.create_tables()
             files = li.import_dump_file(listens_file)
+            li.create_indexes()
         except IOError as err:
             print(err)
             return
