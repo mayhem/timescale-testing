@@ -81,6 +81,7 @@ class ListenImporter(object):
 
         print("import ", filename)
         listens = []
+        last = None
         with open(filename, "rt") as f:
              while True:
                 line = f.readline()
@@ -90,12 +91,25 @@ class ListenImporter(object):
                 ts, jsdata = line.split('-', 1)
                 data = ujson.loads(jsdata)
                 tm = data['track_metadata']
+
+                # Clean up null characters in the data
                 if tm['artist_name']:
                     tm['artist_name'] = tm['artist_name'].replace("\u0000", "")
                 if tm['track_name']:
                      tm['track_name'] = tm['track_name'].replace("\u0000", "")
                 if tm['release_name']:
                     tm['release_name'] = tm['release_name'].replace("\u0000", "")
+
+                # check for duplicate listens
+                if last:
+                    if last[0] == data['listened_at'] and last[1] == data['recording_msid'] and last[2] = data['user_name']:
+                        continue # its a dup
+                last = (data['listened_at'], data['recording_msid'], data['user_name'])
+
+                # Check for 0 timestamps and skip them
+                if data['listened_at'] == 0:
+                    continue
+
                 listens.append([
                     data['listened_at'],
                     data['recording_msid'],
