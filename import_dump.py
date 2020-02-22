@@ -64,109 +64,54 @@ class ListenImporter(object):
         print("Inserted %d rows in %.3f, %d rows/s. Total %d" % (len(listens), t1-t0, int(len(listens)/(t1-t0)), self.total))
 
 
-    def insert_files(self, files):
+    def import_dump_file(self, filename):
 
-        file_count = len(files)
+        print("import ", filename)
         listens = []
-        done = False
-        while not done:
-            lowest_ts = datetime.datetime(2038, 1, 1) # lol this will break before time_t rolls over. Ha!
-            lowest_index = -1
-            last_ts = datetime.datetime(1970, 1, 1)
-            for i, f in enumerate(files):
-                if f[1][0] < lowest_ts:
-                    lowest_index = i
-                    lowest_tw = f[1][0]
+        with open(filename, "rt") as f:
+             while True:
+                line = f.readline()
+                if not line:
+                    break
 
-                    if f[0]:
-                        # replace the consumed listen
-                        new_listen = self.prepare_listen(f[0])
-                        if new_listen:
-                            f[1] = new_listen
-                        else:
-                            f[0] = None
-                            file_count -= 1
-                            if file_count == 0:
-                                done = True
-                                break
-
-            assert(lowest_index != -1)
-            assert(lowest_ts >= last_ts);
-            last_ts = lowest_ts
-            listens.append(f[1])
-
-            if len(listens) == 50000:
-                self.write_listens(listens)
-                listens = []
+                ts, jsdata = line.split('-', 1)
+                data = ujson.loads(jsdata)
+                tm = data['track_metadata']
+                if tm['artist_name']:
+                    tm['artist_name'] = tm['artist_name'].replace("\u0000", "")
+                if tm['track_name']:
+                     tm['track_name'] = tm['track_name'].replace("\u0000", "")
+                if tm['release_name']:
+                    tm['release_name'] = tm['release_name'].replace("\u0000", "")
+                listens.append([
+                    datetime.datetime.utcfromtimestamp(data['listened_at']),
+                    data['recording_msid'],
+                    data['user_name'],
+                    ujson.dumps(tm)])
+                if len(listens) == 50000:
+                    self.write_listens(listens)
+                    listens = []
 
         self.write_listens(listens)
 
 
-    def prepare_listen(self, f):
-
-        line = f.readline()
-        data = ujson.loads(line)
-        tm = data['track_metadata']
-        if tm['artist_name']:
-            tm['artist_name'] = tm['artist_name'].replace("\u0000", "")
-        if tm['track_name']:
-             tm['track_name'] = tm['track_name'].replace("\u0000", "")
-        if tm['release_name']:
-            tm['release_name'] = tm['release_name'].replace("\u0000", "")
-
-        return (datetime.datetime.utcfromtimestamp(data['listened_at']),
-             data['recording_msid'],
-             data['user_name'],
-             ujson.dumps(tm))
-
-
-    def open_dump_files(self, path):
-
-        files = []
-        for filename in os.listdir(path):
-            if filename in ['.', '..']:
-                continue
-
-            new_path = os.path.join(path, filename)
-            if os.path.isdir(new_path):
-                files.extend(self.open_dump_files(new_path))
-
-            if filename.endswith(".listens"):
-                print("open", new_path)
-                f = open(new_path, "r")
-                files.append([f, self.prepare_listen(f)])
-
-        return files
-
-
-
 @click.command()
-@click.argument("listens_dir", nargs=1)
-def import_listens(listens_dir):
+@click.argument("listens_file", nargs=1)
+def import_listens(listens_file):
     with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
         li = ListenImporter(conn)
         li.create_tables()
         try:
-            files = li.open_dump_files(listens_dir)
+            files = li.import_dump_file(listens_file)
         except IOError as err:
             print(err)
             return
         except OSError as err:
             print(err)
             return
-
-        try:
-            li.insert_files(files);
-        except IOError as err:
+        except psycopg2.errors.UntranslatableCharacter:
             print(err)
             return
-        except OSError as err:
-            print(err)
-            return
-        except psycopg2.OperationalError as err:
-            print(err)
-            return
-
 
 
 def usage(command):
