@@ -152,7 +152,7 @@ class ListenImporter(object):
 
             self.total += len(listens)
             if self.total % UPDATE_INTERVAL == 0:
-                print("queued %d listens. %d rows/s" % (self.total, UPDATE_INTERVAL / (time() - self.t0)))
+                print("queued %s listens. %s rows/s" % (f'{self.total:,}', f'{int(UPDATE_INTERVAL / (time() - self.t0)):,}'))
                 self.t0 = time()
 
             return
