@@ -14,22 +14,30 @@ from psycopg2.extras import execute_values
 #TODO
 # - Take empty fields from influx and not store them in timescale
 
-NUM_THREADS = 6 
+NUM_THREADS = 5 
 NUM_CACHE_ENTRIES = NUM_THREADS * 2
 UPDATE_INTERVAL = 500000
 BATCH_SIZE = 2000
 
-CREATE_LISTEN_TABLE_QUERY = """
-    CREATE TABLE listen (
+CREATE_LISTEN_TABLE_QUERIES = [
+"""CREATE TABLE listen (
         listened_at     BIGINT            NOT NULL,
         recording_msid  UUID              NOT NULL,
         user_name       TEXT              NOT NULL,
         data            JSONB             NOT NULL
     )
+""",
+"SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => %s)" % (86400 * 5),
 """
+CREATE VIEW listen_count
+       WITH (timescaledb.continuous)
+         AS SELECT time_bucket(bigint '600', listened_at) AS bucket, user_name, count(listen)
+            FROM listen group by time_bucket(bigint '600', listened_at), user_name;
+"""
+]
 
 CREATE_INDEX_QUERIES = [
-    "CREATE INDEX listened_at_user_name_ndx_listen ON listen (listened_at DESC, user_name)"
+    "CREATE INDEX listened_at_user_name_ndx_listen ON listen (listened_at DESC, user_name)",
     "CREATE UNIQUE INDEX listened_at_recording_msid_user_name_ndx_listen ON listen (listened_at DESC, recording_msid, user_name)"
 ]
 
@@ -95,10 +103,10 @@ class ListenImporter(object):
         with self.conn.cursor() as curs:
             while True:
                 try:
-                    curs.execute(CREATE_LISTEN_TABLE_QUERY)
-                    curs.execute("SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => %s)" % (86400 * 5))
-                    print("created table")
+                    for query in CREATE_LISTEN_TABLE_QUERIES:
+                        curs.execute(query)
                     self.conn.commit()
+                    print("created tables")
                     break
 
                 except DuplicateTable as err:
