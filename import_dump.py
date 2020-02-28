@@ -30,7 +30,7 @@ CREATE_LISTEN_TABLE_QUERIES = [
 "SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => %s)" % (86400 * 5),
 """
 CREATE VIEW listen_count
-       WITH (timescaledb.continuous)
+       WITH (timescaledb.continuous, timescaledb.refresh_lag=600, timescaledb.refresh_interval=600)
          AS SELECT time_bucket(bigint '600', listened_at) AS bucket, user_name, count(listen)
             FROM listen group by time_bucket(bigint '600', listened_at), user_name;
 """
@@ -112,7 +112,8 @@ class ListenImporter(object):
                 except DuplicateTable as err:
                     self.conn.rollback()
                     print("dropped old table")
-                    curs.execute("DROP TABLE listen")
+                    curs.execute("DROP VIEW listen_count CASCADE")
+                    curs.execute("DROP TABLE listen CASCADE")
                     self.conn.commit()
 
 
