@@ -32,15 +32,15 @@ CREATE_LISTEN_TABLE_QUERIES = [
 "SELECT set_integer_now_func('listen', 'unix_now')",
 """
 CREATE VIEW listen_count
-       WITH (timescaledb.continuous)
+       WITH (timescaledb.continuous, timescaledb.refresh_lag=600, timescaledb.refresh_interval=600)
          AS SELECT time_bucket(bigint '600', listened_at) AS bucket, user_name, count(listen)
             FROM listen group by time_bucket(bigint '600', listened_at), user_name;
 """
 ]
 
 CREATE_INDEX_QUERIES = [
-    "CREATE INDEX ON listen (listened_at DESC, user_name)",
-    "CREATE UNIQUE INDEX ON listen (listened_at DESC, user_name, recording_msid)"
+    "CREATE INDEX listened_at_user_name_ndx_listen ON listen (listened_at DESC, user_name)",
+    "CREATE UNIQUE INDEX listened_at_recording_msid_user_name_ndx_listen ON listen (listened_at DESC, recording_msid, user_name)"
 ]
 
 class ListenWriter(Thread):
