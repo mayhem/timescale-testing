@@ -14,7 +14,7 @@ from psycopg2.extras import execute_values
 #TODO
 # - Take empty fields from influx and not store them in timescale
 
-NUM_THREADS = 5 
+NUM_THREADS = 4 
 NUM_CACHE_ENTRIES = NUM_THREADS * 2
 UPDATE_INTERVAL = 500000
 BATCH_SIZE = 2000
@@ -28,6 +28,8 @@ CREATE_LISTEN_TABLE_QUERIES = [
     )
 """,
 "SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => %s)" % (86400 * 5),
+"CREATE OR REPLACE FUNCTION unix_now() returns BIGINT LANGUAGE SQL STABLE as $$ SELECT extract(epoch from now())::BIGINT $$",
+"SELECT set_integer_now_func('listen', 'unix_now')",
 """
 CREATE VIEW listen_count
        WITH (timescaledb.continuous)
@@ -37,7 +39,7 @@ CREATE VIEW listen_count
 ]
 
 CREATE_INDEX_QUERIES = [
-    "CREATE INDEX ON listen (listened_at DESC, user_name)"
+    "CREATE INDEX ON listen (listened_at DESC, user_name)",
     "CREATE UNIQUE INDEX ON listen (listened_at DESC, user_name, recording_msid)"
 ]
 
@@ -112,7 +114,8 @@ class ListenImporter(object):
                 except DuplicateTable as err:
                     self.conn.rollback()
                     print("dropped old table")
-                    curs.execute("DROP TABLE listen")
+                    curs.execute("DROP VIEW listen_count CASCADE")
+                    curs.execute("DROP TABLE listen CASCADE")
                     self.conn.commit()
 
 
@@ -171,7 +174,7 @@ class ListenImporter(object):
 
         threads = []
         for i in range(NUM_THREADS):
-            with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
+            with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=10.2.2.31 password=listenbrainz') as conn:
                 lw = ListenWriter(self, conn)
                 lw.start()
                 threads.append(lw)
@@ -232,7 +235,7 @@ class ListenImporter(object):
 @click.command()
 @click.argument("listens_file", nargs=1)
 def import_listens(listens_file):
-    with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
+    with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=10.2.2.31 password=listenbrainz') as conn:
         li = ListenImporter(conn)
         try:
             li.create_tables()
