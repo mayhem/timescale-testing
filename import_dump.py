@@ -32,9 +32,9 @@ CREATE_LISTEN_TABLE_QUERIES = [
 "SELECT set_integer_now_func('listen', 'unix_now')",
 """
 CREATE VIEW listen_count
-       WITH (timescaledb.continuous, timescaledb.refresh_lag=600, timescaledb.refresh_interval=600)
+       WITH (timescaledb.continuous, timescaledb.refresh_lag=6000, timescaledb.refresh_interval=6000)
          AS SELECT time_bucket(bigint '600', listened_at) AS bucket, user_name, count(listen)
-            FROM listen group by time_bucket(bigint '600', listened_at), user_name;
+            FROM listen group by time_bucket(bigint '6000', listened_at), user_name;
 """
 ]
 

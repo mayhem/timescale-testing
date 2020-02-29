@@ -1,0 +1,7 @@
+docker exec -it timescale-db bash
+
+createuser -U postgres listenbrainz
+createdb -U postgres -O listenbrainz listenbrainz
+psql -U postgres listenbrainz
+
+listenbrainz=# alter user listenbrainz with password 'listenbrainz';
