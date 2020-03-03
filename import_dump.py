@@ -14,7 +14,7 @@ from psycopg2.extras import execute_values
 #TODO
 # - Take empty fields from influx and not store them in timescale
 
-NUM_THREADS = 4 
+NUM_THREADS = 5 
 NUM_CACHE_ENTRIES = NUM_THREADS * 2
 UPDATE_INTERVAL = 500000
 BATCH_SIZE = 2000
@@ -32,9 +32,9 @@ CREATE_LISTEN_TABLE_QUERIES = [
 "SELECT set_integer_now_func('listen', 'unix_now')",
 """
 CREATE VIEW listen_count
-       WITH (timescaledb.continuous, timescaledb.refresh_lag=6000, timescaledb.refresh_interval=6000)
-         AS SELECT time_bucket(bigint '600', listened_at) AS bucket, user_name, count(listen)
-            FROM listen group by time_bucket(bigint '6000', listened_at), user_name;
+       WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS bucket, user_name, count(listen)
+            FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
 """
 ]
 
@@ -174,7 +174,7 @@ class ListenImporter(object):
 
         threads = []
         for i in range(NUM_THREADS):
-            with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=10.2.2.31 password=listenbrainz') as conn:
+            with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
                 lw = ListenWriter(self, conn)
                 lw.start()
                 threads.append(lw)
@@ -235,7 +235,7 @@ class ListenImporter(object):
 @click.command()
 @click.argument("listens_file", nargs=1)
 def import_listens(listens_file):
-    with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=10.2.2.31 password=listenbrainz') as conn:
+    with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
         li = ListenImporter(conn)
         try:
             li.create_tables()
