@@ -54,6 +54,7 @@ class ListenWriter(Thread):
 
 
     def exit(self):
+        print("thread exit called")
         self.done = True
 
 
@@ -77,10 +78,12 @@ class ListenWriter(Thread):
 
         while not self.done:
             batch = self.li.get_batch()
-            if not batch:
-                break
+            if batch:
+                self.write_listens(batch)
+            else:
+                sleep(.05)
 
-            self.write_listens(batch)
+        print("thread exiting")
 
 
 
@@ -90,14 +93,13 @@ class ListenImporter(object):
         self.total = 0
         self.conn = conn
         self.batches = []
-        self.done = False
         self.lock = Lock()
         self.total = 0
         self.t0 = 0
 
-
-    def exit(self):
-        self.done = True
+        self.exact_dup_count = 0
+        self.lastfm_fuzzy_dup_count = 0
+        self.lastfm_import_dup_count = 0
 
 
     def create_tables(self):
@@ -128,19 +130,25 @@ class ListenImporter(object):
                 print(query)
                 curs.execute(query)
 
+
+    def num_batches(self):
+        self.lock.acquire()
+        batches = len(self.batches)
+        self.lock.release()
+
+        return batches
+
+
     def get_batch(self):
-        while True:
-            if self.done:
-                return None
 
-            self.lock.acquire()
-            if len(self.batches):
-                listens = self.batches.pop(0)
-                self.lock.release()
-                return listens
-
+        self.lock.acquire()
+        if len(self.batches):
+            listens = self.batches.pop(0)
             self.lock.release()
-            sleep(.01)
+            return listens
+
+        self.lock.release()
+        return None
 
 
     def add_batch(self, listens):
@@ -150,9 +158,6 @@ class ListenImporter(object):
             self.t0 = time()
 
         while True:
-            if self.done:
-                return None
-
             self.lock.acquire()
             if len(self.batches) >= NUM_CACHE_ENTRIES:
                 self.lock.release()
@@ -170,6 +175,42 @@ class ListenImporter(object):
             return
 
 
+    def cleanup_listen(self, listen):
+
+        tm = listen['track_metadata']
+
+        # Clean up null characters in the data
+        if tm['artist_name']:
+            tm['artist_name'] = tm['artist_name'].replace("\u0000", "")
+        if tm['track_name']:
+             tm['track_name'] = tm['track_name'].replace("\u0000", "")
+        if tm['release_name']:
+            tm['release_name'] = tm['release_name'].replace("\u0000", "")
+
+        return listen
+
+
+    def check_for_duplicates(self, listen, lookahead):
+        ''' 
+            Check for verious types of duplicate tracks. If this track should be inserted
+            into the DB, return True. If it should be skipped (e.g. because there is a better 
+            match in the lookahead), return False
+        '''
+
+        for la_listen in lookahead:
+            # check for exact duplicate, skip this listen if duplicate
+            if listen['listened_at'] == la_listen['listened_at'] and \
+                listen['recording_msid'] == la_listen['recording_msid'] and \
+                listen['user_name'] == la_listen['user_name']:
+                self.exact_dup_count += 1
+                return False
+
+            if la_listen['listened_at'] > listen['listened_at'] + 1:
+                break
+
+        return True
+
+
     def import_dump_file(self, filename):
 
         threads = []
@@ -181,51 +222,52 @@ class ListenImporter(object):
             
 
         print("import ", filename)
+        NUM_LOOKAHEAD_LINES = 1000
+        lookahead = []
         listens = []
-        last = None
         with open(filename, "rt") as f:
-             while True:
-                line = f.readline()
-                if not line:
+            while True:
+                while len(lookahead) < NUM_LOOKAHEAD_LINES:
+                   line = f.readline()
+                   if not line:
+                       break
+              
+                   ts, jsdata = line.split('-', 1)
+                   listen = self.cleanup_listen(ujson.loads(jsdata))
+              
+                   # Check for 0 timestamps and skip them
+                   if listen['listened_at'] == 0:
+                       continue
+
+                   lookahead.append(listen)
+              
+                if not len(lookahead):
                     break
-
-                ts, jsdata = line.split('-', 1)
-                data = ujson.loads(jsdata)
-                tm = data['track_metadata']
-
-                # Clean up null characters in the data
-                if tm['artist_name']:
-                    tm['artist_name'] = tm['artist_name'].replace("\u0000", "")
-                if tm['track_name']:
-                     tm['track_name'] = tm['track_name'].replace("\u0000", "")
-                if tm['release_name']:
-                    tm['release_name'] = tm['release_name'].replace("\u0000", "")
-
-                # check for duplicate listens
-                if last:
-                    if last[0] == data['listened_at'] and last[1] == data['recording_msid'] and last[2] == data['user_name']:
-                        continue # its a dup
-                last = (data['listened_at'], data['recording_msid'], data['user_name'])
-
-                # Check for 0 timestamps and skip them
-                if data['listened_at'] == 0:
-                    continue
-
-                listens.append([
-                    data['listened_at'],
-                    data['recording_msid'],
-                    data['user_name'],
-                    ujson.dumps(tm)])
-
+            
+                listen = lookahead.pop(0)
+                if self.check_for_duplicates(listen, lookahead):
+                   listens.append([
+                       listen['listened_at'],
+                       listen['recording_msid'],
+                       listen['user_name'],
+                       ujson.dumps(listen['track_metadata'])])
+              
                 if len(listens) == BATCH_SIZE:
                     self.add_batch(listens)
                     listens = []
 
+
+        assert(len(lookahead) == 0)
         if len(listens):
             self.add_batch(listens)
 
+        print("Wait for batches to write")
+        while self.num_batches() > 0:
+            sleep(1)
+        
         print("Wait for threads to finish.")
-        self.exit()
+        for t in threads:
+            t.exit()
         for t in threads:
             t.join()
 
@@ -272,6 +314,8 @@ def import_listens(listens_file):
         except psycopg2.errors.UntranslatableCharacter:
             print(err)
             return
+
+        print("deleted %d exact duplicates" % li.exact_dup_count)
 
 
 def usage(command):
