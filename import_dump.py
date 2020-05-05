@@ -5,14 +5,18 @@ import click
 import os
 import ujson
 import psycopg2
+import subprocess
 from time import time, sleep
 from threading import Thread, Lock
 from time import time
+from collections import defaultdict
 from psycopg2.errors import OperationalError, DuplicateTable, UntranslatableCharacter
 from psycopg2.extras import execute_values
 
 #TODO
 # - Take empty fields from influx and not store them in timescale
+# - Sync up the schema to ensure it is correct.
+# - Add the created column
 
 NUM_THREADS = 5 
 NUM_CACHE_ENTRIES = NUM_THREADS * 2
@@ -43,6 +47,12 @@ CREATE_INDEX_QUERIES = [
     "CREATE UNIQUE INDEX listened_at_recording_msid_user_name_ndx_listen ON listen (listened_at DESC, recording_msid, user_name)"
 ]
 
+def key_count(listen):
+    ''' Return the count of top level keys and track_metadata keys as a rough measure as to which listen
+        has more "information".
+    '''
+    return len(listen.keys()) + len(listen['track_metadata'].keys())
+
 class ListenWriter(Thread):
 
     def __init__(self, li, conn):
@@ -54,7 +64,6 @@ class ListenWriter(Thread):
 
 
     def exit(self):
-        print("thread exit called")
         self.done = True
 
 
@@ -83,8 +92,6 @@ class ListenWriter(Thread):
             else:
                 sleep(.05)
 
-        print("thread exiting")
-
 
 
 class ListenImporter(object):
@@ -96,10 +103,10 @@ class ListenImporter(object):
         self.lock = Lock()
         self.total = 0
         self.t0 = 0
+        self.html = None
 
         self.exact_dup_count = 0
-        self.lastfm_fuzzy_dup_count = 0
-        self.lastfm_import_dup_count = 0
+        self.counts = defaultdict(int)
 
 
     def create_tables(self):
@@ -190,6 +197,21 @@ class ListenImporter(object):
         return listen
 
 
+    def output_duplicate_resolution(self, test, chosen, listen_0, listen_1):
+
+        self.html.write("<h2>%s</h2>" % test)
+        self.html.write("<h3>Listen 0 - %s</h3><pre>" % ("chosen" if chosen == 0 else "rejected"))
+        self.html.write(ujson.dumps(listen_0, indent=4, sort_keys=True))
+        self.html.write("</pre><h3>Listen 1 - %s</h3><pre>" % ("chosen" if chosen == 1 else "rejected"))
+        self.html.write(ujson.dumps(listen_1, indent=4, sort_keys=True))
+        with open("/tmp/a.json", "w") as f:
+            f.write(ujson.dumps(listen_0, indent=4, sort_keys=True))
+        with open("/tmp/b.json", "w") as f:
+            f.write(ujson.dumps(listen_1, indent=4, sort_keys=True))
+        diff = subprocess.run(["diff", "/tmp/a.json", "/tmp/b.json"], capture_output=True) 
+        self.html.write("</pre><h3>diff</h3><pre>%s</pre>" % diff.stdout.decode("utf-8"))
+
+
     def check_for_duplicates(self, listen, lookahead):
         ''' 
             Check for verious types of duplicate tracks. If this track should be inserted
@@ -197,21 +219,85 @@ class ListenImporter(object):
             match in the lookahead), return False
         '''
 
-        for la_listen in lookahead:
+        if not len(lookahead):
+            return
+
+        tdiff = lookahead[-1]['listened_at'] - listen['listened_at']
+        assert(tdiff > 2)
+
+        reached_end_of_la = True
+        for i, la_listen in enumerate(lookahead):
             # check for exact duplicate, skip this listen if duplicate
+            tm = listen['track_metadata']
+            la_tm = la_listen['track_metadata']
+
+            # Check to see if recording_msid is the same -- if so, it is a true duplicate
+            # which should never happen.
             if listen['listened_at'] == la_listen['listened_at'] and \
                 listen['recording_msid'] == la_listen['recording_msid'] and \
                 listen['user_name'] == la_listen['user_name']:
-                self.exact_dup_count += 1
+
+                self.output_duplicate_resolution("recording_msid", 1, listen, la_listen)
+                self.counts['msid_dup_count'] += 1
+
                 return False
 
-            if la_listen['listened_at'] > listen['listened_at'] + 1:
+            # Check track_name based duplicates and pick best listen to keep
+            if listen['listened_at'] == la_listen['listened_at'] and \
+                listen['user_name'] == la_listen['user_name'] and \
+                tm['track_name'] == la_tm['track_name']:
+
+
+                # If we have a dedup tag in the lookahead listen, it seems to have more
+                # infomation, so remove the dedup_tag field and keep that version
+                if 'dedup_tag' in la_tm["additional_info"]:
+                    self.counts['dedup_tag_count'] += 1
+                    del la_tm["additional_info"]['dedup_tag']
+                    self.output_duplicate_resolution("dedup_tag", 1, listen, la_listen)
+                    return False
+                if 'dedup_tag' in tm["additional_info"]:
+                    self.counts['dedup_tag_count'] += 1
+                    self.output_duplicate_resolution("dedup_tag", 0, listen, la_listen)
+                    return True
+
+                self.counts['track_name_dup_count'] += 1
+                if key_count(listen) > key_count(la_listen):
+                    self.output_duplicate_resolution("track_name", 0, listen, la_listen)
+                    del lookahead[i]
+                    return True
+
+                self.output_duplicate_resolution("track_name", 1, listen, la_listen)
+                return False
+
+            # Check to see if two listens have a listen timestamps less than 3 seconds apart
+            if abs(listen['listened_at'] - la_listen['listened_at']) <= 3 and \
+                listen['user_name'] == la_listen['user_name'] and \
+                tm['track_name'] == la_tm['track_name']:
+
+                self.counts['fuzzy_dup_count'] += 1
+                if key_count(listen) > key_count(la_listen):
+                    self.output_duplicate_resolution("fuzzy timestamp", 0, listen, la_listen)
+                    del lookahead[i]
+                    return True
+
+                self.output_duplicate_resolution("fuzzy timestamp", 1, listen, la_listen)
+                return False
+
+
+            if la_listen['listened_at'] > listen['listened_at'] + 5:
                 break
 
         return True
 
 
     def import_dump_file(self, filename):
+
+        self.html = open("output.html", "w")
+        self.html.write('<!doctype html>')
+        self.html.write('<html lang="en">')
+        self.html.write("<head>\n")
+        self.html.write('<meta charset="utf-8">')
+        self.html.write('</head><body>\n')
 
         threads = []
         for i in range(NUM_THREADS):
@@ -222,7 +308,7 @@ class ListenImporter(object):
             
 
         print("import ", filename)
-        NUM_LOOKAHEAD_LINES = 1000
+        NUM_LOOKAHEAD_LINES = 2000
         lookahead = []
         listens = []
         with open(filename, "rt") as f:
@@ -272,6 +358,9 @@ class ListenImporter(object):
             t.join()
 
         print("wrote %d listens." % self.total)
+        self.html.write("<p>Counts:<pre>%s</pre></p>\n" % ujson.dumps(self.counts, indent=4, sort_keys=True))
+        self.html.write("</body></html>")
+        self.html.close()
 
 
 @click.command()
@@ -315,7 +404,6 @@ def import_listens(listens_file):
             print(err)
             return
 
-        print("deleted %d exact duplicates" % li.exact_dup_count)
 
 
 def usage(command):
