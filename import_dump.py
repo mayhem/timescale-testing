@@ -13,25 +13,23 @@ from collections import defaultdict
 from psycopg2.errors import OperationalError, DuplicateTable, UntranslatableCharacter
 from psycopg2.extras import execute_values
 
-#TODO
-# - Take empty fields from influx and not store them in timescale
-# - Sync up the schema to ensure it is correct.
-# - Add the created column
-
 NUM_THREADS = 5 
 NUM_CACHE_ENTRIES = NUM_THREADS * 2
 UPDATE_INTERVAL = 500000
 BATCH_SIZE = 2000
 
 CREATE_LISTEN_TABLE_QUERIES = [
-"""CREATE TABLE listen (
-        listened_at     BIGINT            NOT NULL,
-        recording_msid  UUID              NOT NULL,
-        user_name       TEXT              NOT NULL,
-        data            JSONB             NOT NULL
+"""
+    CREATE TABLE listen (
+        listened_at     BIGINT                   NOT NULL,
+        recording_msid  UUID                     NOT NULL,
+        user_name       TEXT                     NOT NULL,
+        created         TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        data            JSONB                    NOT NULL
     )
 """,
-"SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => %s)" % (86400 * 5),
+"SELECT create_hypertable('listen', 'listened_at', chunk_time_interval => 432000)",
+"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO listenbrainz_ts",
 "CREATE OR REPLACE FUNCTION unix_now() returns BIGINT LANGUAGE SQL STABLE as $$ SELECT extract(epoch from now())::BIGINT $$",
 "SELECT set_integer_now_func('listen', 'unix_now')",
 """
@@ -39,7 +37,8 @@ CREATE VIEW listen_count
        WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
          AS SELECT time_bucket(bigint '86400', listened_at) AS bucket, user_name, count(listen)
             FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
-"""
+""",
+"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO listenbrainz_ts;"
 ]
 
 CREATE_INDEX_QUERIES = [
@@ -52,6 +51,17 @@ def key_count(listen):
         has more "information".
     '''
     return len(listen.keys()) + len(listen['track_metadata'].keys())
+
+
+def remove_empty_keys(listen):
+
+    if "track_metadata" in listen:
+        listen["track_metadata"] = remove_empty_keys(listen["track_metadata"])
+        if "additional_info" in listen["track_metadata"]:
+            listen["track_metadata"]["additional_info"] = remove_empty_keys(listen["track_metadata"]["additional_info"])
+
+    return {k: v for k, v in listen.items() if v }
+
 
 class ListenWriter(Thread):
 
@@ -182,6 +192,7 @@ class ListenImporter(object):
             return
 
 
+
     def cleanup_listen(self, listen):
 
         tm = listen['track_metadata']
@@ -194,7 +205,7 @@ class ListenImporter(object):
         if tm['release_name']:
             tm['release_name'] = tm['release_name'].replace("\u0000", "")
 
-        return listen
+        return remove_empty_keys(listen)
 
 
     def output_duplicate_resolution(self, test, chosen, listen_0, listen_1):
