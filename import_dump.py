@@ -58,9 +58,11 @@ def key_count(listen):
 def remove_empty_keys(listen):
 
     if "track_metadata" in listen:
-        listen["track_metadata"] = {k: v for k, v in listen["track_metadata"].items() if v != "" }
+        listen["track_metadata"] = {k: v for k, v in listen["track_metadata"].items() if v }
         if "additional_info" in listen["track_metadata"]:
-            listen["track_metadata"]["additional_info"] = {k: v for k, v in listen["track_metadata"]["additional_info"].items() if v != "" }
+            listen["track_metadata"]["additional_info"] = {k: v for k, v in listen["track_metadata"]["additional_info"].items() if v }
+
+    return listen
 
 
 class ListenWriter(Thread):
@@ -206,7 +208,7 @@ class ListenImporter(object):
         if tm['release_name']:
             tm['release_name'] = tm['release_name'].replace("\u0000", "")
 
-        return listen
+        return remove_empty_keys(listen)
 
 
     def output_duplicate_resolution(self, test, chosen, listen_0, listen_1):
@@ -353,7 +355,7 @@ class ListenImporter(object):
                        listen['listened_at'],
                        listen['recording_msid'],
                        listen['user_name'],
-                       ujson.dumps(listen['track_metadata'])])
+                       ujson.dumps(listen)])
               
                 if len(listens) == BATCH_SIZE:
                     self.add_batch(listens)
