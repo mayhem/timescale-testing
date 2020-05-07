@@ -6,6 +6,8 @@ import os
 import ujson
 import psycopg2
 import subprocess
+import lzma
+import datetime
 from time import time, sleep
 from threading import Thread, Lock
 from time import time
@@ -56,11 +58,9 @@ def key_count(listen):
 def remove_empty_keys(listen):
 
     if "track_metadata" in listen:
-        listen["track_metadata"] = remove_empty_keys(listen["track_metadata"])
+        listen["track_metadata"] = {k: v for k, v in listen["track_metadata"].items() if v != "" }
         if "additional_info" in listen["track_metadata"]:
-            listen["track_metadata"]["additional_info"] = remove_empty_keys(listen["track_metadata"]["additional_info"])
-
-    return {k: v for k, v in listen.items() if v }
+            listen["track_metadata"]["additional_info"] = {k: v for k, v in listen["track_metadata"]["additional_info"].items() if v != "" }
 
 
 class ListenWriter(Thread):
@@ -80,7 +80,7 @@ class ListenWriter(Thread):
     def write_listens(self, listens):
 
         with self.conn.cursor() as curs:
-            query = "INSERT INTO listen VALUES %s"
+            query = "INSERT INTO listen (listened_at, recording_msid, user_name, data) VALUES %s"
             try:
                 t0 = time()
                 execute_values(curs, query, listens, template=None)
@@ -90,7 +90,8 @@ class ListenWriter(Thread):
                 print("failed to insert rows", err)
                 return
 
-#        print("Inserted %d rows in %.3f, %d rows/s, ts %d" % (len(listens), t1-t0, int(len(listens)/(t1-t0)), listens[0][0]))
+        dt = datetime.datetime.fromtimestamp(listens[0][0])
+        print("Inserted %d rows in %.3f, %d rows/s, ts %d %d-%02d" % (len(listens), t1-t0, int(len(listens)/(t1-t0)), listens[0][0], dt.year, dt.month))
 
 
     def run(self):
@@ -205,10 +206,11 @@ class ListenImporter(object):
         if tm['release_name']:
             tm['release_name'] = tm['release_name'].replace("\u0000", "")
 
-        return remove_empty_keys(listen)
+        return listen
 
 
     def output_duplicate_resolution(self, test, chosen, listen_0, listen_1):
+        return
 
         self.html.write("<h2>%s</h2>" % test)
         self.html.write("<h3>Listen 0 - %s</h3><pre>" % ("chosen" if chosen == 0 else "rejected"))
@@ -233,8 +235,12 @@ class ListenImporter(object):
         if not len(lookahead):
             return
 
-        tdiff = lookahead[-1]['listened_at'] - listen['listened_at']
-        assert(tdiff > 2)
+        # there is weird shit at the start of last.fm. Start checking in 2007
+        if listen['listened_at'] > 1167609600:
+            tdiff = lookahead[-1]['listened_at'] - listen['listened_at']
+            if tdiff <= 2:
+                print(lookahead[-1]['listened_at'], listen['listened_at'])
+            assert(tdiff > 2)
 
         reached_end_of_la = True
         for i, la_listen in enumerate(lookahead):
@@ -312,28 +318,28 @@ class ListenImporter(object):
 
         threads = []
         for i in range(NUM_THREADS):
-            with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
+            with psycopg2.connect('dbname=listenbrainz_ts user=listenbrainz_ts host=localhost port=13046 password=listenbrainz_ts') as conn:
                 lw = ListenWriter(self, conn)
                 lw.start()
                 threads.append(lw)
             
 
         print("import ", filename)
-        NUM_LOOKAHEAD_LINES = 2000
+        NUM_LOOKAHEAD_LINES = 5000
         lookahead = []
         listens = []
-        with open(filename, "rt") as f:
+        with lzma.open(filename, "rb") as f:
             while True:
                 while len(lookahead) < NUM_LOOKAHEAD_LINES:
                    line = f.readline()
                    if not line:
                        break
               
-                   ts, jsdata = line.split('-', 1)
+                   ts, jsdata = line.decode('utf-8').split('-', 1)
                    listen = self.cleanup_listen(ujson.loads(jsdata))
               
-                   # Check for 0 timestamps and skip them
-                   if listen['listened_at'] == 0:
+                   # Check for invalid timestamps (last.fm got started in 2004 or so!)
+                   if listen['listened_at'] < 946684800: # Jan 1 2000
                        continue
 
                    lookahead.append(listen)
@@ -377,7 +383,7 @@ class ListenImporter(object):
 @click.command()
 @click.argument("listens_file", nargs=1)
 def import_listens(listens_file):
-    with psycopg2.connect('dbname=listenbrainz user=listenbrainz host=localhost password=listenbrainz') as conn:
+    with psycopg2.connect('dbname=listenbrainz_ts user=postgres host=localhost port=13046 password=postgres') as conn:
         li = ListenImporter(conn)
         try:
             li.create_tables()
