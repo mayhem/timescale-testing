@@ -4,6 +4,7 @@ import sys
 import os
 import tarfile
 import ujson
+import gzip
 
 
 def output_dump_file(outf, src_file):
@@ -21,12 +22,12 @@ def output_dump_file(outf, src_file):
             continue
 
         out = ("%012d-" % data['listened_at']) + line
-        outf.write(out)
+        outf.write(bytes(out, 'utf-8'))
 
 
 def concat_dump(dump_file, output_file):
 
-    with open(output_file, 'w') as outfile:
+    with gzip.open(output_file, 'wb') as outfile:
         with tarfile.open(dump_file, 'r:xz') as tar:
             for tarinfo in tar:
                 if tarinfo.isreg() and tarinfo.name.endswith(".listens"):
