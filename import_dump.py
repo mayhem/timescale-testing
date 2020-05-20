@@ -6,7 +6,7 @@ import os
 import ujson
 import psycopg2
 import subprocess
-import lzma
+import gzip
 import datetime
 from time import time, sleep
 from threading import Thread, Lock
@@ -37,7 +37,15 @@ CREATE_LISTEN_TABLE_QUERIES = [
 """
 CREATE VIEW listen_count
        WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
-         AS SELECT time_bucket(bigint '86400', listened_at) AS bucket, user_name, count(listen)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at, user_name, count(listen)
+            FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
+CREATE VIEW listened_at_max
+       WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at, user_name, max(listened_at)
+            FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
+CREATE VIEW listened_at_min
+       WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at, user_name, min(listened_at)
             FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
 """,
 "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO listenbrainz_ts;"
@@ -242,7 +250,9 @@ class ListenImporter(object):
             tdiff = lookahead[-1]['listened_at'] - listen['listened_at']
             if tdiff <= 2:
                 print(lookahead[-1]['listened_at'], listen['listened_at'])
-            assert(tdiff > 2)
+
+            if tdiff <= 2: 
+                print("Possible lookahead underflow, less than 2 seconds in buffer! All good if the process is done! lookahead len: %d" % len(lookahead))
 
         reached_end_of_la = True
         for i, la_listen in enumerate(lookahead):
@@ -272,12 +282,12 @@ class ListenImporter(object):
                 if 'dedup_tag' in la_tm["additional_info"]:
                     self.counts['dedup_tag_count'] += 1
                     del la_tm["additional_info"]['dedup_tag']
-                    self.output_duplicate_resolution("dedup_tag", 1, listen, la_listen)
-                    return False
+                    self.output_duplicate_resolution("dedup_tag 0", 1, listen, la_listen)
+                    return True
                 if 'dedup_tag' in tm["additional_info"]:
                     self.counts['dedup_tag_count'] += 1
-                    self.output_duplicate_resolution("dedup_tag", 0, listen, la_listen)
-                    return True
+                    self.output_duplicate_resolution("dedup_tag 1", 0, listen, la_listen)
+                    return False
 
                 self.counts['track_name_dup_count'] += 1
                 if key_count(listen) > key_count(la_listen):
@@ -327,12 +337,12 @@ class ListenImporter(object):
             
 
         print("import ", filename)
-        NUM_LOOKAHEAD_LINES = 5000
+        NUM_LOOKAHEAD_SECONDS = 2
         lookahead = []
         listens = []
-        with lzma.open(filename, "rb") as f:
+        with gzip.open(filename, "rb") as f:
             while True:
-                while len(lookahead) < NUM_LOOKAHEAD_LINES:
+                while len(lookahead) == 0 or (lookahead[-1]['listened_at'] - lookahead[0]['listened_at']) <= NUM_LOOKAHEAD_SECONDS:
                    line = f.readline()
                    if not line:
                        break
@@ -348,7 +358,7 @@ class ListenImporter(object):
               
                 if not len(lookahead):
                     break
-            
+
                 listen = lookahead.pop(0)
                 if self.check_for_duplicates(listen, lookahead):
                    listens.append([
