@@ -14,6 +14,7 @@ from time import time
 from collections import defaultdict
 from psycopg2.errors import OperationalError, DuplicateTable, UntranslatableCharacter
 from psycopg2.extras import execute_values
+import config
 
 NUM_THREADS = 5 
 NUM_CACHE_ENTRIES = NUM_THREADS * 2
@@ -220,7 +221,8 @@ class ListenImporter(object):
 
 
     def output_duplicate_resolution(self, test, chosen, listen_0, listen_1):
-        return
+
+        return 0
 
         self.html.write("<h2>%s</h2>" % test)
         self.html.write("<h3>Listen 0 - %s</h3><pre>" % ("chosen" if chosen == 0 else "rejected"))
@@ -274,14 +276,14 @@ class ListenImporter(object):
             # Check track_name based duplicates and pick best listen to keep
             if listen['listened_at'] == la_listen['listened_at'] and \
                 listen['user_name'] == la_listen['user_name'] and \
-                tm['track_name'] == la_tm['track_name']:
+                tm['track_name'].lower() == la_tm['track_name'].lower():
 
 
                 # If we have a dedup tag in the lookahead listen, it seems to have more
                 # infomation, so remove the dedup_tag field and keep that version
                 if 'dedup_tag' in la_tm["additional_info"]:
                     self.counts['dedup_tag_count'] += 1
-                    del la_tm["additional_info"]['dedup_tag']
+                    del lookahead[i]
                     self.output_duplicate_resolution("dedup_tag 0", 1, listen, la_listen)
                     return True
                 if 'dedup_tag' in tm["additional_info"]:
@@ -301,7 +303,7 @@ class ListenImporter(object):
             # Check to see if two listens have a listen timestamps less than 3 seconds apart
             if abs(listen['listened_at'] - la_listen['listened_at']) <= 3 and \
                 listen['user_name'] == la_listen['user_name'] and \
-                tm['track_name'] == la_tm['track_name']:
+                tm['track_name'].lower() == la_tm['track_name'].lower():
 
                 self.counts['fuzzy_dup_count'] += 1
                 if key_count(listen) > key_count(la_listen):
@@ -330,7 +332,7 @@ class ListenImporter(object):
 
         threads = []
         for i in range(NUM_THREADS):
-            with psycopg2.connect('dbname=listenbrainz_ts user=listenbrainz_ts host=localhost port=13046 password=listenbrainz_ts') as conn:
+            with psycopg2.connect(config.DB_CONNECT) as conn:
                 lw = ListenWriter(self, conn)
                 lw.start()
                 threads.append(lw)
@@ -395,7 +397,7 @@ class ListenImporter(object):
 @click.command()
 @click.argument("listens_file", nargs=1)
 def import_listens(listens_file):
-    with psycopg2.connect('dbname=listenbrainz_ts user=postgres host=localhost port=13046 password=postgres') as conn:
+    with psycopg2.connect(config.DB_CONNECT) as conn:
         li = ListenImporter(conn)
         try:
             li.create_tables()
