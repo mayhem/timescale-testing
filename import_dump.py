@@ -356,12 +356,12 @@ class ListenImporter(object):
             
 
         print("import ", filename)
-        NUM_LOOKAHEAD_SECONDS = 2
+        NUM_LOOKAHEAD_LINES = 5000 
         lookahead = []
         listens = []
         with gzip.open(filename, "rb") as f:
             while True:
-                while len(lookahead) == 0 or (lookahead[-1]['listened_at'] - lookahead[0]['listened_at']) <= NUM_LOOKAHEAD_SECONDS:
+                while len(lookahead) < NUM_LOOKAHEAD_LINES:
                    line = f.readline()
                    if not line:
                        break
