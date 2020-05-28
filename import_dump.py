@@ -38,15 +38,15 @@ CREATE_LISTEN_TABLE_QUERIES = [
 """
 CREATE VIEW listen_count
        WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
-         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at, user_name, count(listen)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at_bucket, user_name, count(listen)
             FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
 CREATE VIEW listened_at_max
        WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
-         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at, user_name, max(listened_at)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at_bucket, user_name, max(listened_at) AS max_value
             FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
 CREATE VIEW listened_at_min
        WITH (timescaledb.continuous, timescaledb.refresh_lag=43200, timescaledb.refresh_interval=3600)
-         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at, user_name, min(listened_at)
+         AS SELECT time_bucket(bigint '86400', listened_at) AS listened_at_bucket, user_name, min(listened_at) AS min_value
             FROM listen group by time_bucket(bigint '86400', listened_at), user_name;
 """,
 "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO listenbrainz_ts;"
@@ -221,7 +221,6 @@ class ListenImporter(object):
 
 
     def output_duplicate_resolution(self, test, chosen, listen_0, listen_1):
-
         return 0
 
         self.html.write("<h2>%s</h2>" % test)
@@ -262,6 +261,15 @@ class ListenImporter(object):
             tm = listen['track_metadata']
             la_tm = la_listen['track_metadata']
 
+#            print("0 %d %s %30s %30s" % (listen['listened_at'],
+#                                       listen['recording_msid'][:6], 
+#                                       tm['track_name'][:29],
+#                                       listen['user_name']))
+#            print("1 %d %s %30s %30s" % (la_listen['listened_at'], 
+#                                       la_listen['recording_msid'][:6], 
+#                                       la_tm['track_name'][:29], 
+#                                       la_listen['user_name']))
+
             # Check to see if recording_msid is the same -- if so, it is a true duplicate
             # which should never happen.
             if listen['listened_at'] == la_listen['listened_at'] and \
@@ -270,8 +278,9 @@ class ListenImporter(object):
 
                 self.output_duplicate_resolution("recording_msid", 1, listen, la_listen)
                 self.counts['msid_dup_count'] += 1
+#                print("keep 1")
 
-                return False
+                return 1
 
             # Check track_name based duplicates and pick best listen to keep
             if listen['listened_at'] == la_listen['listened_at'] and \
@@ -285,20 +294,24 @@ class ListenImporter(object):
                     self.counts['dedup_tag_count'] += 1
                     del lookahead[i]
                     self.output_duplicate_resolution("dedup_tag 0", 1, listen, la_listen)
-                    return True
+#                    print("keep 0")
+                    return 0
                 if 'dedup_tag' in tm["additional_info"]:
                     self.counts['dedup_tag_count'] += 1
                     self.output_duplicate_resolution("dedup_tag 1", 0, listen, la_listen)
-                    return False
+#                    print("keep 1")
+                    return 1
 
                 self.counts['track_name_dup_count'] += 1
                 if key_count(listen) > key_count(la_listen):
                     self.output_duplicate_resolution("track_name", 0, listen, la_listen)
                     del lookahead[i]
-                    return True
+#                    print("keep 0")
+                    return 0
 
                 self.output_duplicate_resolution("track_name", 1, listen, la_listen)
-                return False
+#                print("keep 1")
+                return 1
 
             # Check to see if two listens have a listen timestamps less than 3 seconds apart
             if abs(listen['listened_at'] - la_listen['listened_at']) <= 3 and \
@@ -309,16 +322,20 @@ class ListenImporter(object):
                 if key_count(listen) > key_count(la_listen):
                     self.output_duplicate_resolution("fuzzy timestamp", 0, listen, la_listen)
                     del lookahead[i]
-                    return True
+#                    print("keep 0")
+                    return 0
 
                 self.output_duplicate_resolution("fuzzy timestamp", 1, listen, la_listen)
-                return False
+#                print("keep 1")
+                return 1
 
 
             if la_listen['listened_at'] > listen['listened_at'] + 5:
                 break
 
-        return True
+#        print("keep both")
+
+        return 2
 
 
     def import_dump_file(self, filename):
@@ -353,7 +370,7 @@ class ListenImporter(object):
                    listen = self.cleanup_listen(ujson.loads(jsdata))
               
                    # Check for invalid timestamps (last.fm got started in 2004 or so!)
-                   if listen['listened_at'] < 946684800: # Jan 1 2000
+                   if listen['listened_at'] < 1136073600: # Jan 1 2006
                        continue
 
                    lookahead.append(listen)
@@ -362,7 +379,10 @@ class ListenImporter(object):
                     break
 
                 listen = lookahead.pop(0)
-                if self.check_for_duplicates(listen, lookahead):
+                ret = self.check_for_duplicates(listen, lookahead)
+                if ret == 0:
+                   lookahead.insert(0, listen)
+                elif ret == 2:
                    listens.append([
                        listen['listened_at'],
                        listen['recording_msid'],
