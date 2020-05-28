@@ -25,7 +25,7 @@ CREATE_LISTEN_TABLE_QUERIES = [
 """
     CREATE TABLE listen (
         listened_at     BIGINT                   NOT NULL,
-        recording_msid  UUID                     NOT NULL,
+        track_name      TEXT                     NOT NULL,
         user_name       TEXT                     NOT NULL,
         created         TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         data            JSONB                    NOT NULL
@@ -54,7 +54,7 @@ CREATE VIEW listened_at_min
 
 CREATE_INDEX_QUERIES = [
     "CREATE INDEX listened_at_user_name_ndx_listen ON listen (listened_at DESC, user_name)",
-    "CREATE UNIQUE INDEX listened_at_recording_msid_user_name_ndx_listen ON listen (listened_at DESC, recording_msid, user_name)"
+    "CREATE UNIQUE INDEX listened_at_track_name_user_name_ndx_listen ON listen (listened_at DESC, track_name, user_name)"
 ]
 
 def key_count(listen):
@@ -91,7 +91,7 @@ class ListenWriter(Thread):
     def write_listens(self, listens):
 
         with self.conn.cursor() as curs:
-            query = "INSERT INTO listen (listened_at, recording_msid, user_name, data) VALUES %s"
+            query = "INSERT INTO listen (listened_at, track_name, user_name, data) VALUES %s"
             try:
                 t0 = time()
                 execute_values(curs, query, listens, template=None)
@@ -285,7 +285,7 @@ class ListenImporter(object):
             # Check track_name based duplicates and pick best listen to keep
             if listen['listened_at'] == la_listen['listened_at'] and \
                 listen['user_name'] == la_listen['user_name'] and \
-                tm['track_name'].lower() == la_tm['track_name'].lower():
+                tm['track_name'].lower().replace(" ", "") == la_tm['track_name'].lower().replace(" ", ""):
 
 
                 # If we have a dedup tag in the lookahead listen, it seems to have more
@@ -316,7 +316,7 @@ class ListenImporter(object):
             # Check to see if two listens have a listen timestamps less than 3 seconds apart
             if abs(listen['listened_at'] - la_listen['listened_at']) <= 3 and \
                 listen['user_name'] == la_listen['user_name'] and \
-                tm['track_name'].lower() == la_tm['track_name'].lower():
+                tm['track_name'].lower().replace(" ", "") == la_tm['track_name'].lower().replace(" ", ""):
 
                 self.counts['fuzzy_dup_count'] += 1
                 if key_count(listen) > key_count(la_listen):
@@ -385,7 +385,7 @@ class ListenImporter(object):
                 elif ret == 2:
                    listens.append([
                        listen['listened_at'],
-                       listen['recording_msid'],
+                       listen['track_metadata']['track_name'],
                        listen['user_name'],
                        ujson.dumps(listen)])
               
