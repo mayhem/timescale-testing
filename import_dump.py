@@ -383,10 +383,15 @@ class ListenImporter(object):
                 if ret == 0:
                    lookahead.insert(0, listen)
                 elif ret == 2:
+                   ts = listen['listened_at']
+                   un = listen['user_name']
+                   del listen['user_name']
+                   del listen['listened_at']
+                   del listen['recording_msid']
                    listens.append([
-                       listen['listened_at'],
+                       ts,
                        listen['track_metadata']['track_name'],
-                       listen['user_name'],
+                       un,
                        ujson.dumps(listen)])
               
                 if len(listens) == BATCH_SIZE:
