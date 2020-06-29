@@ -91,7 +91,7 @@ class ListenWriter(Thread):
     def write_listens(self, listens):
 
         with self.conn.cursor() as curs:
-            query = "INSERT INTO listen (listened_at, track_name, user_name, data) VALUES %s"
+            query = "INSERT INTO listen (listened_at, track_name, user_name, created, data) VALUES %s"
             try:
                 t0 = time()
                 execute_values(curs, query, listens, template=None)
@@ -362,18 +362,18 @@ class ListenImporter(object):
         with gzip.open(filename, "rb") as f:
             while True:
                 while len(lookahead) < NUM_LOOKAHEAD_LINES:
-                   line = f.readline()
-                   if not line:
-                       break
+                    line = f.readline()
+                    if not line:
+                        break
               
-                   ts, jsdata = line.decode('utf-8').split('-', 1)
-                   listen = self.cleanup_listen(ujson.loads(jsdata))
+                    ts, jsdata = line.decode('utf-8').split('-', 1)
+                    listen = self.cleanup_listen(ujson.loads(jsdata))
               
-                   # Check for invalid timestamps (last.fm got started in 2004 or so!)
-                   if listen['listened_at'] < 1136073600: # Jan 1 2006
-                       continue
+                    # Check for invalid timestamps (last.fm got started in 2004 or so!)
+                    if listen['listened_at'] < 1136073600: # Jan 1 2006
+                        continue
 
-                   lookahead.append(listen)
+                    lookahead.append(listen)
               
                 if not len(lookahead):
                     break
@@ -381,18 +381,25 @@ class ListenImporter(object):
                 listen = lookahead.pop(0)
                 ret = self.check_for_duplicates(listen, lookahead)
                 if ret == 0:
-                   lookahead.insert(0, listen)
+                    lookahead.insert(0, listen)
                 elif ret == 2:
-                   ts = listen['listened_at']
-                   un = listen['user_name']
-                   del listen['user_name']
-                   del listen['listened_at']
-                   del listen['recording_msid']
-                   listens.append([
-                       ts,
-                       listen['track_metadata']['track_name'],
-                       un,
-                       ujson.dumps(listen)])
+                    ts = listen['listened_at']
+                    un = listen['user_name']
+                    try:
+                        created = listen['inserted_timestamp']
+                        del listen['inserted_timestamp']
+                    except KeyError:
+                        created = datetime.datetime.utcfromtimestamp(0)
+                       
+                    del listen['user_name']
+                    del listen['listened_at']
+                    del listen['recording_msid']
+                    listens.append([
+                        ts,
+                        listen['track_metadata']['track_name'],
+                        un,
+                        created,
+                        ujson.dumps(listen)])
               
                 if len(listens) == BATCH_SIZE:
                     self.add_batch(listens)
